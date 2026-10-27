@@ -77,8 +77,10 @@ shadowJar {
     exclude 'kotlin/**'
     exclude '**/*org/jetbrains/annotations/Nls*'
     exclude 'com/google/**'
-	exclude 'org/codehaus/**'
+    exclude 'org/codehaus/**'
 
+    relocate 'java.lang.management', 'stub.management'
+    relocate 'javax.management', 'stub.management.javax'
 
     dependencies {
         exclude(dependency("org.jetbrains:annotations:23.0.0"))
@@ -108,7 +110,7 @@ publishing {
         shadow(MavenPublication) {
             groupId = 'com.github.CilicaLab'
             artifactId = project.name
-            version = '2.2.0'
+            version = '2.2.1'
             artifact(tasks.shadowJar) {
                 builtBy tasks.shadowJar
             }
@@ -157,6 +159,8 @@ abstract class RemapingTask extends DefaultTask {
             @Override
             String map(String name) {                
                 if (name.startsWith("com/intellij")) return name.replaceFirst("^com/intellij", "org/jetbrains/kotlin/com/intellij")
+                if (name.startsWith("java/lang/management")) return "stub/management/" + name.substring("java/lang/management/".length())
+                if (name.startsWith("javax/management")) return "stub/management/javax/" + name.substring("javax/management/".length())
                 return name
             }
         }
@@ -198,3 +202,152 @@ abstract class RemapingTask extends DefaultTask {
         }
     }
 }
+
+tasks.register("postProcessKotlincJar") {
+    dependsOn tasks.shadowJar
+    mustRunAfter tasks.shadowJar
+
+    doLast {
+        File jarFile = file("$rootDir/build/libs/kotlinc.jar")
+        File tempFile = file("$rootDir/build/tmp/libs/kotlinc-postprocess.jar")
+        tempFile.parentFile.mkdirs()
+        tempFile.delete()
+
+        try (
+            JarFile jar = new JarFile(jarFile)
+            ZipOutputStream out = new ZipOutputStream(new FileOutputStream(tempFile))
+        ) {
+            Set<String> existingEntries = []
+            Enumeration<JarEntry> entries = jar.entries()
+            while (entries.hasMoreElements()) {
+                JarEntry entry = entries.nextElement()
+                existingEntries << entry.getName()
+            }
+
+            entries = jar.entries()
+            while (entries.hasMoreElements()) {
+                JarEntry entry = entries.nextElement()
+                InputStream entryStream = jar.getInputStream(entry)
+                byte[] bytes = entryStream.readAllBytes()
+                entryStream.close()
+
+                ZipEntry newEntry = new ZipEntry(entry.getName())
+                out.putNextEntry(newEntry)
+                out.write(bytes)
+                out.closeEntry()
+
+                if (entry.getName().endsWith(".class")) {
+                    String clazzName = entry.getName().substring(0, entry.getName().length() - 6) + ".clazz"
+                    if (!existingEntries.contains(clazzName)) {
+                        ZipEntry clazzEntry = new ZipEntry(clazzName)
+                        out.putNextEntry(clazzEntry)
+                        out.closeEntry()
+                        existingEntries << clazzName
+                    }
+                }
+            }
+        }
+
+        jarFile.delete()
+        tempFile.renameTo(jarFile)
+    }
+}
+
+tasks.register("verifyClazzEntries") {
+    dependsOn tasks.postProcessKotlincJar
+
+    doLast {
+        File jarFile = file("$rootDir/build/libs/kotlinc.jar")
+        JarFile jar = new JarFile(jarFile)
+        Set<String> entries = []
+        Enumeration<JarEntry> e = jar.entries()
+        while (e.hasMoreElements()) {
+            entries << e.nextElement().getName()
+        }
+        jar.close()
+
+        List<String> requiredClazzes = [
+            "org/jetbrains/kotlin/cli/common/CompilerSystemProperties.clazz",
+            "org/jetbrains/kotlin/cli/jvm/compiler/KotlinCoreEnvironment\$Companion.clazz",
+            "org/jetbrains/kotlin/utils/PathUtil.clazz"
+        ]
+
+        List<String> missing = []
+        requiredClazzes.each { clazz ->
+            if (!entries.contains(clazz)) {
+                missing << clazz
+            }
+        }
+
+        if (!missing.isEmpty()) {
+            throw new GradleException("Verification failed! Missing required .clazz entries in final jar: ${missing}")
+        }
+        println "VERIFICATION SUCCESS: All required .clazz entries (including CompilerSystemProperties.clazz) are present in final jar!"
+    }
+}
+
+tasks.register("verifyNoJavaManagement") {
+    dependsOn tasks.postProcessKotlincJar
+
+    doLast {
+        File jarFile = file("$rootDir/build/libs/kotlinc.jar")
+        JarFile jar = new JarFile(jarFile)
+        List<String> violations = []
+        Enumeration<JarEntry> entries = jar.entries()
+        while (entries.hasMoreElements()) {
+            JarEntry entry = entries.nextElement()
+            if (entry.getName().endsWith(".class") || entry.getName().endsWith(".clazz")) {
+                byte[] bytes = jar.getInputStream(entry).readAllBytes()
+                String content = new String(bytes, "ISO-8859-1")
+                if (content.contains("java/lang/management") || content.contains("java.lang.management")) {
+                    violations << entry.getName()
+                }
+            }
+        }
+        jar.close()
+
+        if (!violations.isEmpty()) {
+            throw new GradleException("Verification failed! Unrelocated java/lang/management references found in ${violations.size()} entries: ${violations}")
+        }
+        println "VERIFICATION SUCCESS: No java/lang/management references remain in the final jar!"
+    }
+}
+
+tasks.register("scanDesktopApis") {
+    doLast {
+        File jarFile = file("$rootDir/build/libs/kotlinc.jar")
+        JarFile jar = new JarFile(jarFile)
+        def patterns = [
+            "java/awt": [],
+            "javax/swing": [],
+            "java/beans": [],
+            "sun/misc": [],
+            "java/lang/instrument": []
+        ]
+        Enumeration<JarEntry> entries = jar.entries()
+        while (entries.hasMoreElements()) {
+            JarEntry entry = entries.nextElement()
+            if (entry.getName().endsWith(".class") || entry.getName().endsWith(".clazz")) {
+                byte[] bytes = jar.getInputStream(entry).readAllBytes()
+                String content = new String(bytes, "ISO-8859-1")
+                patterns.keySet().each { prefix ->
+                    if (content.contains(prefix)) {
+                        patterns[prefix] << entry.getName()
+                    }
+                }
+            }
+        }
+        jar.close()
+        println "=== DESKTOP JDK API SCAN RESULTS ==="
+        patterns.each { prefix, list ->
+            println "Pattern '${prefix}': ${list.size()} matching files"
+            list.take(10).each { println "   - ${it}" }
+            if (list.size() > 10) println "   ... and ${list.size() - 10} more"
+        }
+    }
+}
+
+tasks.shadowJar.finalizedBy tasks.postProcessKotlincJar
+tasks.postProcessKotlincJar.finalizedBy tasks.verifyClazzEntries, tasks.verifyNoJavaManagement
+tasks.assemble.dependsOn tasks.verifyClazzEntries, tasks.verifyNoJavaManagement
+tasks.build.dependsOn tasks.verifyClazzEntries, tasks.verifyNoJavaManagement
