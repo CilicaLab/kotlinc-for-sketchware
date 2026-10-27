@@ -26,7 +26,7 @@ buildscript {
 
 plugins {
     id 'java-library'
-    id 'org.jetbrains.kotlin.jvm' version '2.0.21'
+    id 'org.jetbrains.kotlin.jvm' version '2.2.0'
     id 'com.diffplug.spotless' version '7.0.3'
     id 'org.jlleitschuh.gradle.ktlint' version '12.1.0'   
     id 'com.github.johnrengelman.shadow' version '8.1.1' 
@@ -83,12 +83,12 @@ shadowJar {
     dependencies {
         exclude(dependency("org.jetbrains:annotations:23.0.0"))
         exclude(dependency("org.jetbrains.kotlin:kotlin-reflect:1.6.10"))
-        exclude(dependency("org.jetbrains.kotlin:kotlin-stdlib:2.1.21"))
-        exclude(dependency("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.21"))
-        exclude(dependency("org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.21"))
-        exclude(dependency("org.jetbrains.kotlin:kotlin-stdlib-common:2.1.21"))
+        exclude(dependency("org.jetbrains.kotlin:kotlin-stdlib:2.2.0"))
+        exclude(dependency("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.2.0"))
+        exclude(dependency("org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.2.0"))
+        exclude(dependency("org.jetbrains.kotlin:kotlin-stdlib-common:2.2.0"))
         exclude(dependency("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.0"))
-        exclude(dependency("org.jetbrains.kotlin:kotlin-script-runtime:2.1.21"))
+        exclude(dependency("org.jetbrains.kotlin:kotlin-script-runtime:2.2.0"))
      }
 	
     archiveFileName.set("kotlinc.jar")
@@ -99,16 +99,16 @@ shadowJar {
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlin:kotlin-compiler:2.1.21")
+    implementation("org.jetbrains.kotlin:kotlin-compiler:2.2.0")
     implementation("org.jetbrains.intellij.deps:trove4j:1.0.20200330")
 }
 
 publishing {
     publications {
         shadow(MavenPublication) {
-            groupId = 'com.github.waelchateur'
+            groupId = 'com.github.CilicaLab'
             artifactId = project.name
-            version = '2.1.21'
+            version = '2.2.0'
             artifact(tasks.shadowJar) {
                 builtBy tasks.shadowJar
             }
@@ -172,7 +172,16 @@ abstract class RemapingTask extends DefaultTask {
 
                 if (entry.getName().endsWith(".class")) {
                     ClassReader reader = new ClassReader(entryStream)
-                    ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES)
+                    ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+                        @Override
+                        protected String getCommonSuperClass(String type1, String type2) {
+                            try {
+                                return super.getCommonSuperClass(type1, type2)
+                            } catch (Throwable t) {
+                                return "java/lang/Object"
+                            }
+                        }
+                    }
                     ClassRemapper remapperVisitor = new ClassRemapper(writer, remapper)
                     reader.accept(remapperVisitor, ClassReader.EXPAND_FRAMES)
                     byte[] remappedBytes = writer.toByteArray()

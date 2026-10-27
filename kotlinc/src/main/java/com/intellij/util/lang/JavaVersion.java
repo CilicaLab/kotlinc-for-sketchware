@@ -4,7 +4,6 @@ package com.intellij.util.lang;
 
 import static org.jetbrains.kotlin.reflection.android.AndroidSupport.isDalvik;
 
-// import com.intellij.ReviseWhenPortedToJDK;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
